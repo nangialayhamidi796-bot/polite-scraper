@@ -2,6 +2,7 @@ import json
 import time
 from pathlib import Path
 from urllib.parse import urljoin
+from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 import requests
 from bs4 import BeautifulSoup
@@ -21,6 +22,18 @@ HEADERS = {
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CACHE_DIR = PROJECT_DIR / "cache"
+OUTPUT_DIR = PROJECT_DIR / "output"
+
+class BookRecord(BaseModel):
+    title: str = Field(min_length=1)
+    product_url: HttpUrl
+    price_text: str = Field(min_length=1)
+    price_gbp: float = Field(gt=0)
+    availability_text: str = Field(min_length=1)
+    rating_text: str = Field(min_length=1)
+    description: str | None
+    source_page: HttpUrl
+    fetched_at: datetime
 
 
 def fetch_page(url, cache_name):
@@ -175,5 +188,60 @@ def scrape_book_details():
 
     return raw_records
 
+def validate_and_store(raw_records):
+    OUTPUT_DIR.mkdir(exist_ok=True)
+
+    valid_by_url = {}
+    errors = []
+
+    for raw_record in raw_records:
+        try:
+            price_gbp = float(
+                raw_record["price_text"].replace("£", "").strip()
+            )
+
+            clean_record = {
+                **raw_record,
+                "price_gbp": price_gbp,
+            }
+
+            validated = BookRecord.model_validate(clean_record)
+            validated_data = validated.model_dump(mode="json")
+
+            product_url = str(validated_data["product_url"])
+            valid_by_url[product_url] = validated_data
+
+        except (ValueError, ValidationError) as error:
+            errors.append(
+                {
+                    "product_url": raw_record.get("product_url"),
+                    "reason": str(error),
+                    "record": raw_record,
+                }
+            )
+
+    valid_records = list(valid_by_url.values())
+
+    books_file = OUTPUT_DIR / "books.json"
+    errors_file = OUTPUT_DIR / "errors.json"
+
+    books_file.write_text(
+        json.dumps(valid_records, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    errors_file.write_text(
+        json.dumps(errors, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    print(f"valid_records={len(valid_records)}")
+    print(f"invalid_records={len(errors)}")
+    print(f"books_file={books_file}")
+    print(f"errors_file={errors_file}")
+
+    return valid_records, errors
+
 if __name__ == "__main__":
-    scrape_book_details()
+    raw_records = scrape_book_details()
+    validate_and_store(raw_records)
