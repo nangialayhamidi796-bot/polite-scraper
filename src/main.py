@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
 REQUEST_DELAY = 0.5
 TIMEOUT = 10
+BROKEN_TEST_URL = (
+    "https://books.toscrape.com/catalogue/"
+    "this-book-does-not-exist_0000/index.html"
+)
 
 HEADERS = {
     "User-Agent": (
@@ -23,6 +27,11 @@ HEADERS = {
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CACHE_DIR = PROJECT_DIR / "cache"
 OUTPUT_DIR = PROJECT_DIR / "output"
+
+RUN_STATS = {
+    "pages_fetched": 0,
+    "cache_hits": 0,
+}
 
 class BookRecord(BaseModel):
     title: str = Field(min_length=1)
@@ -41,6 +50,8 @@ def fetch_page(url, cache_name):
     cache_file = CACHE_DIR / cache_name
 
     if cache_file.exists():
+        RUN_STATS["cache_hits"] += 1
+
         html = cache_file.read_text(encoding="utf-8")
         html = html.replace("Â£", "£")
         size = len(html.encode("utf-8"))
@@ -48,29 +59,56 @@ def fetch_page(url, cache_name):
         print(f"CACHE HIT: {cache_name}, size={size} bytes")
         return html
 
-    print(f"FETCH: {url}")
-    time.sleep(REQUEST_DELAY)
+    for attempt in range(1, 3):
+        if attempt == 1:
+            print(f"FETCH: {url}")
+        else:
+            print(f"RETRY: {url}")
 
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=TIMEOUT,
-    )
+        time.sleep(REQUEST_DELAY)
+        RUN_STATS["pages_fetched"] += 1
 
-    if response.status_code != 200:
+        try:
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=TIMEOUT,
+            )
+        except (requests.Timeout, requests.ConnectionError) as error:
+            if attempt == 1:
+                time.sleep(1)
+                continue
+
+            raise RuntimeError(
+                f"Request failed after retry: {url} - {error}"
+            ) from error
+
+        if response.status_code == 200:
+            response.encoding = "utf-8"
+            html = response.text
+            cache_file.write_text(html, encoding="utf-8")
+
+            size = len(html.encode("utf-8"))
+            print(
+                f"FETCH COMPLETE: status=200, size={size} bytes"
+            )
+
+            return html
+
+        if response.status_code in (403, 404):
+            raise RuntimeError(
+                f"Fetch failed with status {response.status_code}: {url}"
+            )
+
+        if 500 <= response.status_code < 600 and attempt == 1:
+            time.sleep(1)
+            continue
+
         raise RuntimeError(
             f"Fetch failed with status {response.status_code}: {url}"
         )
 
-    
-    response.encoding = "utf-8"
-    html = response.text
-    cache_file.write_text(html, encoding="utf-8")
-
-    size = len(html.encode("utf-8"))
-    print(f"FETCH COMPLETE: status=200, size={size} bytes")
-
-    return html
+    raise RuntimeError(f"Fetch failed: {url}")
 def get_fetched_at(cache_name):
     cache_file = CACHE_DIR / cache_name
     modified_time = cache_file.stat().st_mtime
@@ -158,10 +196,14 @@ def discover_books():
     print(f"unique_urls={len(book_sources)}")
 
     return book_sources
-
 def scrape_book_details():
     book_sources = discover_books()
+
+    book_sources[BROKEN_TEST_URL] = START_URL
+
     raw_records = []
+    failed_pages = []
+    total_pages = len(book_sources)
 
     for number, (product_url, source_page) in enumerate(
         book_sources.items(),
@@ -170,23 +212,43 @@ def scrape_book_details():
         book_slug = product_url.rstrip("/").split("/")[-2]
         cache_name = f"book-{book_slug}.html"
 
-        print(f"DETAIL {number}/60")
+        print(f"DETAIL {number}/{total_pages}")
 
-        html = fetch_page(product_url, cache_name)
+        try:
+            html = fetch_page(product_url, cache_name)
 
-        record = extract_book(
-            html=html,
-            product_url=product_url,
-            source_page=source_page,
-            cache_name=cache_name,
-        )
+            record = extract_book(
+                html=html,
+                product_url=product_url,
+                source_page=source_page,
+                cache_name=cache_name,
+            )
 
-        raw_records.append(record)
+            raw_records.append(record)
+
+        except Exception as error:
+            print(f"SKIPPED: {product_url} - {error}")
+
+            failed_pages.append(
+                {
+                    "url": product_url,
+                    "reason": str(error),
+                }
+            )
 
     print(f"detail_pages={len(raw_records)}")
-    print(json.dumps(raw_records[0], indent=2, ensure_ascii=False))
+    print(f"failed_pages={len(failed_pages)}")
 
-    return raw_records
+    if raw_records:
+        print(
+            json.dumps(
+                raw_records[0],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+
+    return raw_records, failed_pages
 
 def validate_and_store(raw_records):
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -242,6 +304,58 @@ def validate_and_store(raw_records):
 
     return valid_records, errors
 
+def write_run_report(
+    start_time,
+    start_clock,
+    valid_records,
+    validation_errors,
+    failed_page_details,
+):
+    duration_seconds = round(
+        time.perf_counter() - start_clock,
+        2,
+    )
+
+    report = {
+        "start_time": start_time.isoformat().replace(
+            "+00:00",
+            "Z",
+        ),
+        "duration_seconds": duration_seconds,
+        "pages_fetched": RUN_STATS["pages_fetched"],
+        "cache_hits": RUN_STATS["cache_hits"],
+        "valid_records": len(valid_records),
+        "invalid_records": len(validation_errors),
+        "failed_pages": len(failed_page_details),
+        "failed_page_details": failed_page_details,
+    }
+
+    report_file = OUTPUT_DIR / "run-report.json"
+
+    report_file.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    print(f"run_report={report_file}")
+
+    return report
+
 if __name__ == "__main__":
-    raw_records = scrape_book_details()
-    validate_and_store(raw_records)
+    run_start_time = datetime.now(timezone.utc)
+    run_start_clock = time.perf_counter()
+
+    raw_records, failed_page_details = scrape_book_details()
+
+    valid_records, validation_errors = validate_and_store(
+        raw_records
+    )
+
+    write_run_report(
+        start_time=run_start_time,
+        start_clock=run_start_clock,
+        valid_records=valid_records,
+        validation_errors=validation_errors,
+        failed_page_details=failed_page_details,
+    )
