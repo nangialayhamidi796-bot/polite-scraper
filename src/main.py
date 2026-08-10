@@ -1,9 +1,11 @@
+import json
 import time
 from pathlib import Path
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime, timezone
 
 
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
@@ -27,6 +29,7 @@ def fetch_page(url, cache_name):
 
     if cache_file.exists():
         html = cache_file.read_text(encoding="utf-8")
+        html = html.replace("Â£", "£")
         size = len(html.encode("utf-8"))
 
         print(f"CACHE HIT: {cache_name}, size={size} bytes")
@@ -46,6 +49,8 @@ def fetch_page(url, cache_name):
             f"Fetch failed with status {response.status_code}: {url}"
         )
 
+    
+    response.encoding = "utf-8"
     html = response.text
     cache_file.write_text(html, encoding="utf-8")
 
@@ -53,7 +58,61 @@ def fetch_page(url, cache_name):
     print(f"FETCH COMPLETE: status=200, size={size} bytes")
 
     return html
+def get_fetched_at(cache_name):
+    cache_file = CACHE_DIR / cache_name
+    modified_time = cache_file.stat().st_mtime
 
+    fetched_at = datetime.fromtimestamp(
+        modified_time,
+        tz=timezone.utc,
+    )
+
+    return fetched_at.isoformat().replace("+00:00", "Z")
+
+def extract_book(html, product_url, source_page, cache_name):
+    soup = BeautifulSoup(html, "html.parser")
+    product = soup.select_one("div.product_main")
+
+    if product is None:
+        raise ValueError("Product section was not found")
+
+    title = product.select_one("h1").get_text(strip=True)
+    price_text = product.select_one("p.price_color").get_text(strip=True)
+
+    availability_text = product.select_one(
+        "p.availability"
+    ).get_text(" ", strip=True)
+
+    rating_element = product.select_one("p.star-rating")
+    rating_classes = rating_element.get("class", [])
+
+    rating_text = next(
+        class_name
+        for class_name in rating_classes
+        if class_name != "star-rating"
+    )
+
+    description_element = soup.select_one(
+        "#product_description + p"
+    )
+
+    if description_element is None:
+        description = None
+    else:
+        description = description_element.get_text(" ", strip=True)
+
+    raw_record = {
+        "title": title,
+        "product_url": product_url,
+        "price_text": price_text,
+        "availability_text": availability_text,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": get_fetched_at(cache_name),
+    }
+
+    return raw_record
 
 def discover_books():
     page_url = START_URL
@@ -87,6 +146,34 @@ def discover_books():
 
     return book_sources
 
+def scrape_book_details():
+    book_sources = discover_books()
+    raw_records = []
+
+    for number, (product_url, source_page) in enumerate(
+        book_sources.items(),
+        start=1,
+    ):
+        book_slug = product_url.rstrip("/").split("/")[-2]
+        cache_name = f"book-{book_slug}.html"
+
+        print(f"DETAIL {number}/60")
+
+        html = fetch_page(product_url, cache_name)
+
+        record = extract_book(
+            html=html,
+            product_url=product_url,
+            source_page=source_page,
+            cache_name=cache_name,
+        )
+
+        raw_records.append(record)
+
+    print(f"detail_pages={len(raw_records)}")
+    print(json.dumps(raw_records[0], indent=2, ensure_ascii=False))
+
+    return raw_records
 
 if __name__ == "__main__":
-    discover_books()
+    scrape_book_details()
