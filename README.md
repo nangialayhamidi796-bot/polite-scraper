@@ -161,3 +161,7 @@ Interactive API documentation:
 ```text
 http://127.0.0.1:8000/docs
 ```
+
+### Stage 2 observation
+
+Three real Ollama requests returned sensible categories: mystery, romance, and other. The model consistently wrapped its JSON inside Markdown code fences, proving that raw model output must be parsed and validated before the API can trust it.

@@ -1,10 +1,11 @@
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
+from llm.client import generate_enrichment
 from llm.schemas import EnrichRequest, EnrichResponse
 
 
@@ -53,7 +54,9 @@ def enrich_book(book: EnrichRequest):
             confidence=0.5,
         )
 
-    raise HTTPException(
-        status_code=503,
-        detail="LLM integration is not enabled yet",
+    raw_answer = generate_enrichment(book)
+
+    return Response(
+        content=raw_answer,
+        media_type="application/json",
     )
