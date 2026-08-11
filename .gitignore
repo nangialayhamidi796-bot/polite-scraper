@@ -11,3 +11,6 @@ cache/
 
 # Environment variables
 .env
+
+
+logs/

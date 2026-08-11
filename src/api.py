@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from llm.client import LLMProviderError, LLMTimeoutError
 from llm.processor import EnrichmentValidationError, process_enrichment
 from llm.schemas import EnrichRequest, EnrichResponse
 
@@ -46,6 +47,12 @@ def health():
 
 @app.post("/enrich", response_model=EnrichResponse)
 def enrich_book(book: EnrichRequest):
+    if os.getenv("LLM_ENABLED", "true").lower() in {"0", "false"}:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM enrichment is currently disabled",
+        )
+
     if os.getenv("LLM_STUB", "").lower() in {"1", "true"}:
         return EnrichResponse(
             category="other",
@@ -56,6 +63,19 @@ def enrich_book(book: EnrichRequest):
 
     try:
         return process_enrichment(book)
+
+    except LLMTimeoutError as error:
+        raise HTTPException(
+            status_code=504,
+            detail=str(error),
+        ) from error
+
+    except LLMProviderError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=str(error),
+        ) from error
+
     except EnrichmentValidationError as error:
         raise HTTPException(
             status_code=422,
