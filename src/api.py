@@ -1,11 +1,11 @@
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 
-from llm.client import generate_enrichment
+from llm.processor import EnrichmentValidationError, process_enrichment
 from llm.schemas import EnrichRequest, EnrichResponse
 
 
@@ -54,9 +54,10 @@ def enrich_book(book: EnrichRequest):
             confidence=0.5,
         )
 
-    raw_answer = generate_enrichment(book)
-
-    return Response(
-        content=raw_answer,
-        media_type="application/json",
-    )
+    try:
+        return process_enrichment(book)
+    except EnrichmentValidationError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
