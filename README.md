@@ -129,3 +129,35 @@ The CSS selectors are designed specifically for Books to Scrape. A change to the
 ## Ethics
 
 Use an official API when one is available. Never bypass logins, paywalls, access controls, or blocks. Collect only the information needed for the stated purpose.
+
+## LLM Enrichment API
+
+The LLM provider is configured through environment variables, so the API can switch between local Ollama and a hosted provider without changing code.
+
+Start the API in stub mode:
+
+```bash
+LLM_STUB=1 uvicorn api:app --app-dir src --reload
+```
+
+### Valid request
+
+```bash
+curl -X POST "http://127.0.0.1:8000/enrich" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"The Secret Garden","price":"£12.99","availability":"In stock","rating":"Four"}'
+```
+
+### Invalid request
+
+```bash
+curl -X POST "http://127.0.0.1:8000/enrich" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"The Secret Garden","price":"£12.99","availability":"In stock"}'
+```
+
+Interactive API documentation:
+
+```text
+http://127.0.0.1:8000/docs
+```
