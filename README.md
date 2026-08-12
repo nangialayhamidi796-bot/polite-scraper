@@ -338,3 +338,39 @@ The required data is already present in the HTML returned by the server. Using a
 ### Ethics
 
 Use an official API when one is available. Never bypass logins, paywalls, access controls, or blocks. Collect only the information required for the stated purpose.
+
+
+## BE-06: Background Job Processing
+
+The enrichment API now moves the slow LLM operation into a background worker.
+
+### Workflow
+
+1. `POST /enrich` accepts the book data.
+2. The API immediately returns HTTP `202 Accepted`.
+3. The response includes a job ID and status URL.
+4. A background worker processes the LLM enrichment.
+5. `GET /jobs/{job_id}` reports the job status and result.
+
+### Job statuses
+
+- `pending` — waiting in the queue
+- `running` — being processed
+- `completed` — finished successfully
+- `failed` — permanently failed
+
+### Idempotency
+
+`POST /enrich` requires an `Idempotency-Key` header. Reusing the same key returns the original job instead of running the LLM operation twice.
+
+### Reliability
+
+- Jobs retry up to three times.
+- Retries use exponential backoff.
+- Permanently failed jobs create an error alert in the application logs.
+- Completed jobs are not processed twice.
+
+### Run the API
+
+```powershell
+uvicorn api:app --reload --app-dir src

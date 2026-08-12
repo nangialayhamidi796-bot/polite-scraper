@@ -1,13 +1,13 @@
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from llm.schemas import EnrichRequest
+from jobs import create_job, get_job, start_worker
 
-from llm.client import LLMProviderError, LLMTimeoutError
-from llm.processor import EnrichmentValidationError, process_enrichment
-from llm.schemas import EnrichRequest, EnrichResponse
+from jobs import create_job, get_job, start_worker
 
 
 load_dotenv()
@@ -16,6 +16,9 @@ app = FastAPI(
     title="Polite Scraper API",
     version="1.0.0",
 )
+@app.on_event("startup")
+def startup_event():
+    start_worker()
 
 
 @app.exception_handler(RequestValidationError)
@@ -45,39 +48,44 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/enrich", response_model=EnrichResponse)
-def enrich_book(book: EnrichRequest):
-    if os.getenv("LLM_ENABLED", "true").lower() in {"0", "false"}:
+@app.post("/enrich", status_code=202)
+def enrich_book(
+    book: EnrichRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+):
+
+    job, created = create_job(
+    book.model_dump(),
+    idempotency_key,
+)
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "job_id": job.id,
+            "status": job.status,
+            "created": created, 
+            "status_url": f"/jobs/{job.id}",
+        },
+        headers={
+            "Location": f"/jobs/{job.id}",
+        },
+    )
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str):
+    job = get_job(job_id)
+
+    if job is None:
         raise HTTPException(
-            status_code=503,
-            detail="LLM enrichment is currently disabled",
+            status_code=404,
+            detail="Job not found",
         )
 
-    if os.getenv("LLM_STUB", "").lower() in {"1", "true"}:
-        return EnrichResponse(
-            category="other",
-            summary=f"Book record for {book.title}.",
-            quality_flags=["stub_response"],
-            confidence=0.5,
-        )
-
-    try:
-        return process_enrichment(book)
-
-    except LLMTimeoutError as error:
-        raise HTTPException(
-            status_code=504,
-            detail=str(error),
-        ) from error
-
-    except LLMProviderError as error:
-        raise HTTPException(
-            status_code=502,
-            detail=str(error),
-        ) from error
-
-    except EnrichmentValidationError as error:
-        raise HTTPException(
-            status_code=422,
-            detail=str(error),
-        ) from error
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "attempts": job.attempts,
+        "result": job.result,
+        "error": job.error,
+        "created_at": job.created_at,
+    }
