@@ -14,3 +14,7 @@ cache/
 
 
 logs/
+
+# Generated report artifacts
+output/reports.db
+output/reports/

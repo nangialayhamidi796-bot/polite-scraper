@@ -374,3 +374,50 @@ The enrichment API now moves the slow LLM operation into a background worker.
 
 ```powershell
 uvicorn api:app --reload --app-dir src
+
+## PDF Report Generator
+
+This feature generates a PDF report from the scraped book data as a background job.
+
+### What the backend does
+
+A backend is the part of an application that processes data and performs work that the user does not directly see. In this feature, the backend reads the book data, stores it in SQLite, runs SQL aggregation queries, creates a PDF, stores the PDF in the `output/reports` directory, and provides a download endpoint.
+
+### Data flow
+
+1. The client sends `POST /reports`.
+2. The API immediately returns HTTP `202 Accepted` with a job ID.
+3. A background worker takes the job from a queue.
+4. Book data from `output/books.json` is loaded into SQLite.
+5. SQL calculates the total number of books, average price, lowest price, highest price, and statistics grouped by rating.
+6. ReportLab renders the SQL results into a PDF file.
+7. `GET /reports/{job_id}` returns the job status.
+8. `GET /reports/{job_id}/download` downloads the completed PDF.
+
+### Run the API
+
+```bash
+uvicorn api:app --app-dir src --reload
+```
+
+Open the interactive API documentation:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+### Report endpoints
+
+- `POST /reports` — creates a background PDF report job.
+- `GET /reports/{job_id}` — checks whether the job is pending, running, completed, or failed.
+- `GET /reports/{job_id}/download` — downloads the completed PDF report.
+
+### Example response
+
+```json
+{
+  "job_id": "877fa9cc-87b6-4b15-9704-09033638f664",
+  "status": "pending",
+  "status_url": "/reports/877fa9cc-87b6-4b15-9704-09033638f664"
+}
+```
